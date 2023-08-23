@@ -20,11 +20,11 @@ var (
 
 type Entry struct {
 	Sys struct {
-		ID string `json:"id"`
+		ID        string `json:"id"`
+		CreatedAt string `json:"createdAt"`
 	} `json:"sys"`
 	Fields struct {
-		Name      string    `json:"name"`
-		CreatedAt time.Time `json:"createdAt"`
+		Name string `json:"name"`
 	} `json:"fields"`
 }
 
@@ -42,6 +42,27 @@ func main() {
 	}
 }
 
+func initDB(connStr string) (*sql.DB, error) {
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		return nil, err
+	}
+
+	// テーブルが存在しない場合に自動的に作成する
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS entries (
+			id          TEXT PRIMARY KEY,
+			name        TEXT,
+			created_at  TIMESTAMP WITH TIME ZONE
+		)
+	`)
+	if err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
 func syncData(cmd *cobra.Command, args []string) {
 	entries := []string{
 		"6QRk7gQYmOyJ1eMG9H4jbB",
@@ -51,7 +72,7 @@ func syncData(cmd *cobra.Command, args []string) {
 
 	connStr := "user=postgres dbname=postgres sslmode=disable password=tkz2001r"
 	var err error
-	db, err = sql.Open("postgres", connStr)
+	db, err = initDB(connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -83,6 +104,8 @@ func syncData(cmd *cobra.Command, args []string) {
 	}
 }
 
+// 以下略（同じ）
+
 func checkEntryExists(entryID string) (bool, error) {
 	var count int
 	err := db.QueryRow("SELECT COUNT(*) FROM entries WHERE id = $1", entryID).Scan(&count)
@@ -113,10 +136,18 @@ func getEntry(entryID string) (*Entry, error) {
 		return nil, err
 	}
 
+	// "createdAt" フィールドのパース
+	createdAtStr := entry.Sys.CreatedAt
+	createdAt, err := time.Parse(time.RFC3339, createdAtStr)
+	if err != nil {
+		return nil, err
+	}
+	entry.Sys.CreatedAt = createdAt.Format("2006-01-02 15:04:05-07:00")
+
 	return &entry, nil
 }
 
 func saveEntry(entry *Entry) error {
-	_, err := db.Exec("INSERT INTO entries (id, name, created_at) VALUES ($1, $2, $3)", entry.Sys.ID, entry.Fields.Name, entry.Fields.CreatedAt)
+	_, err := db.Exec("INSERT INTO entries (id, name, created_at) VALUES ($1, $2, $3)", entry.Sys.ID, entry.Fields.Name, entry.Sys.CreatedAt)
 	return err
 }

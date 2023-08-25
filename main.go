@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/graphql-go/graphql"
+	"github.com/graphql-go/handler"
 	_ "github.com/lib/pq"
 	"github.com/spf13/cobra"
 )
@@ -40,7 +42,115 @@ func main() {
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
 	}
+
+	// GraphQLスキーマの定義
+	var schema, _ = graphql.NewSchema(
+		graphql.SchemaConfig{
+			Query: rootQuery,
+		},
+	)
+
+	// GraphQLハンドラの作成
+	h := handler.New(&handler.Config{
+		Schema:   &schema,
+		Pretty:   true,
+		GraphiQL: true,
+	})
+	// GraphQLエンドポイントの設定
+	http.Handle("/graphql", h)
+
+	// サーバを起動
+	fmt.Println("GraphQL server is running on http://localhost:8080/graphql")
+	http.ListenAndServe(":8080", nil)
 }
+
+var entryType = graphql.NewObject(
+	graphql.ObjectConfig{
+		Name: "Entry",
+		Fields: graphql.Fields{
+			"id": &graphql.Field{
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					entry, _ := p.Source.(*Entry)
+					return entry.Sys.ID, nil
+				},
+			},
+			"name": &graphql.Field{
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					entry, _ := p.Source.(*Entry)
+					return entry.Fields.Name, nil
+				},
+			},
+			"createdAt": &graphql.Field{
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					entry, _ := p.Source.(*Entry)
+					return entry.Sys.CreatedAt, nil
+				},
+			},
+		},
+	},
+)
+
+var rootQuery = graphql.NewObject(
+	graphql.ObjectConfig{
+		Name: "Query",
+		Fields: graphql.Fields{
+			"entries": &graphql.Field{
+				Type: graphql.NewList(entryType),
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					// データベースからエントリー一覧を取得する
+					fmt.Println("Fetching entries from the database...")
+					rows, err := db.Query("SELECT id, name, created_at FROM entries")
+					if err != nil {
+						log.Println("Error querying entries:", err)
+						return nil, err
+					}
+					defer rows.Close()
+
+					var entries []*Entry
+					for rows.Next() {
+						var entry Entry
+						err := rows.Scan(&entry.Sys.ID, &entry.Fields.Name, &entry.Sys.CreatedAt)
+						if err != nil {
+							log.Println("Error scanning entry row:", err)
+							return nil, err
+						}
+						entries = append(entries, &entry)
+					}
+					fmt.Printf("Fetched %d entries from the database.\n", len(entries))
+					return entries, nil
+				},
+			},
+			"entry": &graphql.Field{
+				Type: entryType,
+				Args: graphql.FieldConfigArgument{
+					"id": &graphql.ArgumentConfig{
+						Type: graphql.String,
+					},
+				},
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					id, ok := p.Args["id"].(string)
+					if !ok {
+						return nil, fmt.Errorf("ID argument is required")
+					}
+
+					// データベースから指定されたIDのエントリーを取得する
+					entry := &Entry{}
+					err := db.QueryRow("SELECT id, name, created_at FROM entries WHERE id = $1", id).
+						Scan(&entry.Sys.ID, &entry.Fields.Name, &entry.Sys.CreatedAt)
+					if err != nil {
+						log.Println("Error retrieving entry:", err)
+						return nil, err
+					}
+
+					return entry, nil
+				},
+			},
+		},
+	},
+)
 
 func initDB(connStr string) (*sql.DB, error) {
 	db, err := sql.Open("postgres", connStr)
@@ -76,7 +186,7 @@ func syncData(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
+	// defer db.Close()
 
 	for _, entryID := range entries {
 		entry, err := getEntry(entryID)
@@ -103,8 +213,6 @@ func syncData(cmd *cobra.Command, args []string) {
 		}
 	}
 }
-
-// 以下略（同じ）
 
 func checkEntryExists(entryID string) (bool, error) {
 	var count int
@@ -135,6 +243,8 @@ func getEntry(entryID string) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	fmt.Println("entry.Sys:", entry.Sys)
+	fmt.Println("entry.Fields:", entry.Fields)
 
 	// "createdAt" フィールドのパース
 	createdAtStr := entry.Sys.CreatedAt
